@@ -1,58 +1,78 @@
 import { eq, like, or, desc } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, submissions, pageContent, pageImages, InsertSubmission, adminAuth } from "../drizzle/schema";
-import { ENV } from './_core/env';
+import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
+import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
+import Database from "better-sqlite3";
+import { users, submissions, pageContent, pageImages, adminAuth } from "../drizzle/schema";
 import { scryptSync, randomBytes } from "crypto";
+import path from "path";
+import fs from "fs";
 
-let _db: ReturnType<typeof drizzle> | null = null;
+let _db: any = null;
+let isSqlite = false;
 
 export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
+  if (!_db) {
+    if (process.env.DATABASE_URL && process.env.DATABASE_URL.startsWith("mysql")) {
+      try {
+        _db = drizzleMysql(process.env.DATABASE_URL);
+        isSqlite = false;
+        console.log("[Database] Connected to MySQL");
+      } catch (error) {
+        console.warn("[Database] MySQL connection failed, falling back to SQLite:", error);
+      }
+    }
+    
+    if (!_db) {
+      const dbPath = path.resolve(process.cwd(), "sqlite.db");
+      const sqlite = new Database(dbPath);
+      _db = drizzleSqlite(sqlite);
+      isSqlite = true;
+      console.log(`[Database] Using SQLite at ${dbPath}`);
+      
+      // Auto-create tables for SQLite if they don't exist
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          openId TEXT NOT NULL UNIQUE,
+          name TEXT,
+          email TEXT,
+          loginMethod TEXT,
+          role TEXT NOT NULL DEFAULT 'user',
+          createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          lastSignedIn DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS admin_auth (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          password TEXT NOT NULL,
+          createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS submissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          phone TEXT NOT NULL UNIQUE,
+          ip TEXT NOT NULL,
+          createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS page_content (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          \`key\` TEXT NOT NULL UNIQUE,
+          label TEXT NOT NULL,
+          value TEXT NOT NULL,
+          updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS page_images (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          \`key\` TEXT NOT NULL UNIQUE,
+          label TEXT NOT NULL,
+          url TEXT NOT NULL,
+          updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
     }
   }
   return _db;
-}
-
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) throw new Error("User openId is required for upsert");
-  const db = await getDb();
-  if (!db) { console.warn("[Database] Cannot upsert user: database not available"); return; }
-
-  try {
-    const values: InsertUser = { openId: user.openId };
-    const updateSet: Record<string, unknown> = {};
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-    textFields.forEach(assignNullable);
-    if (user.lastSignedIn !== undefined) { values.lastSignedIn = user.lastSignedIn; updateSet.lastSignedIn = user.lastSignedIn; }
-    if (user.role !== undefined) { values.role = user.role; updateSet.role = user.role; }
-    else if (user.openId === ENV.ownerOpenId) { values.role = 'admin'; updateSet.role = 'admin'; }
-    if (!values.lastSignedIn) values.lastSignedIn = new Date();
-    if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
-    await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
-}
-
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
 }
 
 // ---- Admin Password Auth ----
@@ -73,12 +93,15 @@ function verifyPassword(password: string, storedHash: string): boolean {
 
 export async function setAdminPassword(password: string) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   const { hash, salt } = hashPassword(password);
   const combined = `${salt}:${hash}`;
   const existing = await db.select().from(adminAuth).limit(1);
   if (existing.length > 0) {
-    await db.insert(adminAuth).values({ password: combined }).onDuplicateKeyUpdate({ set: { password: combined } });
+    if (isSqlite) {
+      await db.update(adminAuth).set({ password: combined }).where(eq(adminAuth.id, existing[0].id));
+    } else {
+      await db.insert(adminAuth).values({ password: combined }).onDuplicateKeyUpdate({ set: { password: combined } });
+    }
   } else {
     await db.insert(adminAuth).values({ password: combined });
   }
@@ -86,17 +109,19 @@ export async function setAdminPassword(password: string) {
 
 export async function verifyAdminPassword(password: string): Promise<boolean> {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   const result = await db.select().from(adminAuth).limit(1);
-  if (result.length === 0) return false;
+  if (result.length === 0) {
+    // Auto-seed default password if none exists
+    await setAdminPassword("123456");
+    return password === "123456";
+  }
   return verifyPassword(password, result[0].password);
 }
 
 // ---- Submissions ----
 
-export async function createSubmission(data: InsertSubmission) {
+export async function createSubmission(data: any) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   const existing = await db.select().from(submissions).where(eq(submissions.phone, data.phone)).limit(1);
   if (existing.length > 0) {
     return { duplicate: true, submission: existing[0] };
@@ -108,7 +133,6 @@ export async function createSubmission(data: InsertSubmission) {
 
 export async function listSubmissions(search?: string) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   if (search && search.trim()) {
     const q = `%${search.trim()}%`;
     return db.select().from(submissions)
@@ -120,7 +144,6 @@ export async function listSubmissions(search?: string) {
 
 export async function deleteSubmission(id: number) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   await db.delete(submissions).where(eq(submissions.id, id));
 }
 
@@ -128,22 +151,30 @@ export async function deleteSubmission(id: number) {
 
 export async function getAllPageContent() {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   return db.select().from(pageContent).orderBy(pageContent.key);
 }
 
 export async function upsertPageContent(key: string, label: string, value: string) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.insert(pageContent).values({ key, label, value })
-    .onDuplicateKeyUpdate({ set: { value, label } });
+  if (isSqlite) {
+    const existing = await db.select().from(pageContent).where(eq(pageContent.key, key)).limit(1);
+    if (existing.length > 0) {
+      await db.update(pageContent).set({ value, label }).where(eq(pageContent.key, key));
+    } else {
+      await db.insert(pageContent).values({ key, label, value });
+    }
+  } else {
+    await db.insert(pageContent).values({ key, label, value }).onDuplicateKeyUpdate({ set: { value, label } });
+  }
 }
 
 export async function seedPageContent(items: { key: string; label: string; value: string }[]) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   for (const item of items) {
-    await db.insert(pageContent).values(item).onDuplicateKeyUpdate({ set: { label: item.label } });
+    const existing = await db.select().from(pageContent).where(eq(pageContent.key, item.key)).limit(1);
+    if (existing.length === 0) {
+      await db.insert(pageContent).values(item);
+    }
   }
 }
 
@@ -151,21 +182,29 @@ export async function seedPageContent(items: { key: string; label: string; value
 
 export async function getAllPageImages() {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   return db.select().from(pageImages).orderBy(pageImages.key);
 }
 
 export async function upsertPageImage(key: string, label: string, url: string) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.insert(pageImages).values({ key, label, url })
-    .onDuplicateKeyUpdate({ set: { url, label } });
+  if (isSqlite) {
+    const existing = await db.select().from(pageImages).where(eq(pageImages.key, key)).limit(1);
+    if (existing.length > 0) {
+      await db.update(pageImages).set({ url, label }).where(eq(pageImages.key, key));
+    } else {
+      await db.insert(pageImages).values({ key, label, url });
+    }
+  } else {
+    await db.insert(pageImages).values({ key, label, url }).onDuplicateKeyUpdate({ set: { url, label } });
+  }
 }
 
 export async function seedPageImages(items: { key: string; label: string; url: string }[]) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
   for (const item of items) {
-    await db.insert(pageImages).values(item).onDuplicateKeyUpdate({ set: { label: item.label } });
+    const existing = await db.select().from(pageImages).where(eq(pageImages.key, item.key)).limit(1);
+    if (existing.length === 0) {
+      await db.insert(pageImages).values(item);
+    }
   }
 }
