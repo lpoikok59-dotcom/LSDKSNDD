@@ -25,26 +25,26 @@ import { SignJWT, jwtVerify } from "jose";
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "your-secret-key-change-in-production");
 const ADMIN_SESSION_COOKIE = "admin_session";
 
-// Default CDN image URLs from komoreco.shop
+// 1:1 对标 komoreco.shop 的图片
 const DEFAULT_IMAGES = [
-  { key: "hero", label: "首圖（頂部橫幅）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/首圖_20707f25.jpg" },
-  { key: "img1", label: "圖片 1（台灣進入超高齡社會）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/1_b6bcee5f.webp" },
-  { key: "img2", label: "圖片 2（身體8種變化）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/2_dfeff937.webp" },
-  { key: "img3", label: "圖片 3（男人有心無力）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/3_6d77f17b.png" },
-  { key: "img4", label: "圖片 4（你是否也有這樣的煩惱）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/4_28170ea9.jpg" },
-  { key: "img5", label: "圖片 5（日理萬機的你）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/5_8819ad13.jpg" },
-  { key: "img6", label: "圖片 6（你累了嗎）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/6_dbef20f5.jpg" },
-  { key: "img7", label: "圖片 7（霸王養精蓄力丹成分）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/7_5ba248d2.png" },
-  { key: "img16", label: "圖片 16（台灣媒體推薦會）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/16_26d14ea5.png" },
-  { key: "img8", label: "圖片 8（新聞報導1）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/8_83789839.webp" },
-  { key: "img9", label: "圖片 9（新聞報導2）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/9_597553b1.webp" },
-  { key: "img10", label: "圖片 10（新聞報導3）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/10_311f87eb.webp" },
-  { key: "img11", label: "圖片 11（新聞報導4）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/11_2e3f3275.webp" },
-  { key: "img12", label: "圖片 12（各項證書）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/12_1ea79ea0.png" },
-  { key: "img13", label: "圖片 13（產品展示）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/13_a34b1f87.jpg" },
-  { key: "img14", label: "圖片 14（全台免運費 GIF）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/14_0e59ca03.gif" },
-  { key: "img17", label: "圖片 17（物流支援）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/17_166fc4dc.png" },
-  { key: "img15", label: "圖片 15（產品底部）", url: "https://d2xsxph8kpxj0f.cloudfront.net/310519663509404563/axLZXwVsKvey8vuVfRueGB/15_1380c870.png" },
+  { key: "hero", label: "首圖（頂部橫幅）", url: "https://komoreco.shop/首圖.jpg" },
+  { key: "img1", label: "圖片 1", url: "https://komoreco.shop/1.webp" },
+  { key: "img2", label: "圖片 2", url: "https://komoreco.shop/2.webp" },
+  { key: "img3", label: "圖片 3", url: "https://komoreco.shop/3.png" },
+  { key: "img4", label: "圖片 4", url: "https://komoreco.shop/4.jpg" },
+  { key: "img5", label: "圖片 5", url: "https://komoreco.shop/5.jpg" },
+  { key: "img6", label: "圖片 6", url: "https://komoreco.shop/6.jpg" },
+  { key: "img7", label: "圖片 7", url: "https://komoreco.shop/7.png" },
+  { key: "img16", label: "圖片 16", url: "https://komoreco.shop/16.png" },
+  { key: "img8", label: "圖片 8", url: "https://komoreco.shop/8.webp" },
+  { key: "img9", label: "圖片 9", url: "https://komoreco.shop/9.webp" },
+  { key: "img10", label: "圖片 10", url: "https://komoreco.shop/10.webp" },
+  { key: "img11", label: "圖片 11", url: "https://komoreco.shop/11.webp" },
+  { key: "img12", label: "圖片 12", url: "https://komoreco.shop/12.png" },
+  { key: "img13", label: "圖片 13", url: "https://komoreco.shop/13.jpg" },
+  { key: "img14", label: "圖片 14", url: "https://komoreco.shop/14.gif" },
+  { key: "img17", label: "圖片 17", url: "https://komoreco.shop/17.png" },
+  { key: "img15", label: "圖片 15", url: "https://komoreco.shop/15.png" },
 ];
 
 const DEFAULT_CONTENT = [
@@ -169,7 +169,7 @@ export const appRouter = router({
     // Content management
     getAllContent: adminPasswordProcedure.query(async () => {
       await seedPageContent(DEFAULT_CONTENT);
-      return getAllPageContent();
+      return getAllContent();
     }),
     updateContent: adminPasswordProcedure
       .input(z.object({ key: z.string(), label: z.string(), value: z.string() }))
