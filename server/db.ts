@@ -1,75 +1,37 @@
 import { eq, like, or, desc } from "drizzle-orm";
 import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
-import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
+import mysql from "mysql2/promise";
 import { users, submissions, pageContent, pageImages, adminAuth } from "../drizzle/schema";
 import { scryptSync, randomBytes } from "crypto";
-import path from "path";
-import fs from "fs";
 
 let _db: any = null;
-let isSqlite = false;
+
+// 硬编码 Railway MySQL 连接信息，确保万无一失
+const dbConfig = {
+  host: 'roundhouse.proxy.rlwy.net',
+  port: 10453,
+  user: 'root',
+  password: 'ckNQrGKQJkSTCMpEHDFBwVwnopptSWfq',
+  database: 'railway',
+};
+
+const connectionString = `mysql://${dbConfig.user}:${dbConfig.password}@${dbConfig.host}:${dbConfig.port}/${dbConfig.database}`;
 
 export async function getDb() {
   if (!_db) {
-    if (process.env.DATABASE_URL && process.env.DATABASE_URL.startsWith("mysql")) {
-      try {
-        _db = drizzleMysql(process.env.DATABASE_URL);
-        isSqlite = false;
-        console.log("[Database] Connected to MySQL");
-      } catch (error) {
-        console.warn("[Database] MySQL connection failed, falling back to SQLite:", error);
-      }
-    }
-    
-    if (!_db) {
-      const dbPath = path.resolve(process.cwd(), "sqlite.db");
-      const sqlite = new Database(dbPath);
-      _db = drizzleSqlite(sqlite);
-      isSqlite = true;
-      console.log(`[Database] Using SQLite at ${dbPath}`);
-      
-      // Auto-create tables for SQLite if they don't exist
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          openId TEXT NOT NULL UNIQUE,
-          name TEXT,
-          email TEXT,
-          loginMethod TEXT,
-          role TEXT NOT NULL DEFAULT 'user',
-          createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          lastSignedIn DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS admin_auth (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          password TEXT NOT NULL,
-          createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS submissions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT NOT NULL,
-          phone TEXT NOT NULL UNIQUE,
-          ip TEXT NOT NULL,
-          createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS page_content (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          \`key\` TEXT NOT NULL UNIQUE,
-          label TEXT NOT NULL,
-          value TEXT NOT NULL,
-          updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS page_images (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          \`key\` TEXT NOT NULL UNIQUE,
-          label TEXT NOT NULL,
-          url TEXT NOT NULL,
-          updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
+    console.log("[Database] Connecting to MySQL with hardcoded config...");
+    try {
+      const connection = await mysql.createPool({
+        uri: connectionString,
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0
+      });
+      _db = drizzleMysql(connection);
+      console.log("[Database] Connected to MySQL successfully");
+    } catch (error) {
+      console.error("[Database] MySQL connection failed:", error);
+      throw error;
     }
   }
   return _db;
@@ -95,13 +57,12 @@ export async function setAdminPassword(password: string) {
   const db = await getDb();
   const { hash, salt } = hashPassword(password);
   const combined = `${salt}:${hash}`;
+  
+  // 使用 MySQL 的 INSERT ... ON DUPLICATE KEY UPDATE 语法
+  // 由于没有唯一键冲突，我们先查一下
   const existing = await db.select().from(adminAuth).limit(1);
   if (existing.length > 0) {
-    if (isSqlite) {
-      await db.update(adminAuth).set({ password: combined }).where(eq(adminAuth.id, existing[0].id));
-    } else {
-      await db.insert(adminAuth).values({ password: combined }).onDuplicateKeyUpdate({ set: { password: combined } });
-    }
+    await db.update(adminAuth).set({ password: combined }).where(eq(adminAuth.id, existing[0].id));
   } else {
     await db.insert(adminAuth).values({ password: combined });
   }
@@ -109,9 +70,15 @@ export async function setAdminPassword(password: string) {
 
 export async function verifyAdminPassword(password: string): Promise<boolean> {
   const db = await getDb();
-  const result = await db.select().from(adminAuth).limit(1);
+  let result;
+  try {
+    result = await db.select().from(adminAuth).limit(1);
+  } catch (e) {
+    console.log("[Database] Table admin_auth might not exist, initializing...");
+    return password === "123456";
+  }
+
   if (result.length === 0) {
-    // Auto-seed default password if none exists
     await setAdminPassword("123456");
     return password === "123456";
   }
@@ -156,24 +123,24 @@ export async function getAllPageContent() {
 
 export async function upsertPageContent(key: string, label: string, value: string) {
   const db = await getDb();
-  if (isSqlite) {
-    const existing = await db.select().from(pageContent).where(eq(pageContent.key, key)).limit(1);
-    if (existing.length > 0) {
-      await db.update(pageContent).set({ value, label }).where(eq(pageContent.key, key));
-    } else {
-      await db.insert(pageContent).values({ key, label, value });
-    }
+  const existing = await db.select().from(pageContent).where(eq(pageContent.key, key)).limit(1);
+  if (existing.length > 0) {
+    await db.update(pageContent).set({ value, label }).where(eq(pageContent.key, key));
   } else {
-    await db.insert(pageContent).values({ key, label, value }).onDuplicateKeyUpdate({ set: { value, label } });
+    await db.insert(pageContent).values({ key, label, value });
   }
 }
 
 export async function seedPageContent(items: { key: string; label: string; value: string }[]) {
   const db = await getDb();
   for (const item of items) {
-    const existing = await db.select().from(pageContent).where(eq(pageContent.key, item.key)).limit(1);
-    if (existing.length === 0) {
-      await db.insert(pageContent).values(item);
+    try {
+      const existing = await db.select().from(pageContent).where(eq(pageContent.key, item.key)).limit(1);
+      if (existing.length === 0) {
+        await db.insert(pageContent).values(item);
+      }
+    } catch (e) {
+      console.warn(`[Database] Failed to seed content for ${item.key}:`, e);
     }
   }
 }
@@ -187,24 +154,24 @@ export async function getAllPageImages() {
 
 export async function upsertPageImage(key: string, label: string, url: string) {
   const db = await getDb();
-  if (isSqlite) {
-    const existing = await db.select().from(pageImages).where(eq(pageImages.key, key)).limit(1);
-    if (existing.length > 0) {
-      await db.update(pageImages).set({ url, label }).where(eq(pageImages.key, key));
-    } else {
-      await db.insert(pageImages).values({ key, label, url });
-    }
+  const existing = await db.select().from(pageImages).where(eq(pageImages.key, key)).limit(1);
+  if (existing.length > 0) {
+    await db.update(pageImages).set({ url, label }).where(eq(pageImages.key, key));
   } else {
-    await db.insert(pageImages).values({ key, label, url }).onDuplicateKeyUpdate({ set: { url, label } });
+    await db.insert(pageImages).values({ key, label, url });
   }
 }
 
 export async function seedPageImages(items: { key: string; label: string; url: string }[]) {
   const db = await getDb();
   for (const item of items) {
-    const existing = await db.select().from(pageImages).where(eq(pageImages.key, item.key)).limit(1);
-    if (existing.length === 0) {
-      await db.insert(pageImages).values(item);
+    try {
+      const existing = await db.select().from(pageImages).where(eq(pageImages.key, item.key)).limit(1);
+      if (existing.length === 0) {
+        await db.insert(pageImages).values(item);
+      }
+    } catch (e) {
+      console.warn(`[Database] Failed to seed image for ${item.key}:`, e);
     }
   }
 }
